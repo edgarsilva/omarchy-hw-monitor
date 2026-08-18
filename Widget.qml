@@ -45,6 +45,28 @@ BarWidget {
   // of bar, and a clock that idles at 0.8 tells you less than the gauge does.
   readonly property bool showClocks: boolSetting("showClocks", false) && !vertical
 
+  // Which screens this instance draws on; empty means all of them. The bar
+  // mounts one widget per monitor and has no per-monitor filter of its own, so
+  // a widget that only belongs on one screen has to opt out on the others.
+  // Accepts an array or a comma/space separated string.
+  readonly property var monitors: {
+    var raw = setting("monitors", [])
+    if (raw === undefined || raw === null) return []
+    if (raw instanceof Array) return raw.map(String)
+    var text = String(raw).trim()
+    return text === "" ? [] : text.split(/[,\s]+/)
+  }
+
+  readonly property string screenName: {
+    var window = root.QsWindow ? root.QsWindow.window : null
+    return window && window.screen ? String(window.screen.name) : ""
+  }
+
+  // An unknown screen name (no window yet) shows rather than hides, so the
+  // widget never vanishes because it was asked too early.
+  readonly property bool onThisScreen: monitors.length === 0 || screenName === ""
+    || monitors.indexOf(screenName) !== -1
+
   readonly property bool showRam: boolSetting("showRam", true)
   readonly property bool showCpu: boolSetting("showCpu", true)
   readonly property bool showGpu: boolSetting("showGpu", true)
@@ -173,6 +195,8 @@ BarWidget {
   Service {
     id: hw
     settings: root.settings
+    // No point sampling for a screen this instance is not drawn on.
+    active: root.onThisScreen
   }
 
   // In a monospace face the degree sign owns a full character cell but only
@@ -428,7 +452,8 @@ BarWidget {
   readonly property int gaugeWidth: Math.max(6, Math.round(iconSize * 0.45))
   readonly property int gaugeHeight: Math.max(11, Math.round(iconSize * 0.9))
 
-  implicitWidth: button.implicitWidth
+  visible: onThisScreen
+  implicitWidth: onThisScreen ? button.implicitWidth : 0
   implicitHeight: button.implicitHeight
 
   WidgetButton {

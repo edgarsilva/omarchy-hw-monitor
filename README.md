@@ -105,6 +105,7 @@ Set per bar entry in `~/.config/omarchy/shell.json`. They apply on save.
 | Key | Default | Meaning |
 |---|---|---|
 | `mode` | `full` | `compact`, `full`, or `labels` |
+| `monitors` | *(all)* | Connector names to draw on — `"DP-1"`, or `"DP-1,HDMI-A-1"`. See [per-monitor](#one-screen-only) |
 | `refreshIntervalSec` | `2` | Sampling interval, 1–60 |
 | `showRam`, `showCpu`, `showGpu` | `true` | Drop a group |
 | `showGauges` | `true` | Hide the gauges |
@@ -152,6 +153,21 @@ decides how:
 
 At exactly 100% the figure needs a fourth character in any of these, so the
 group widens briefly under full load.
+
+### One screen only
+
+The bar mounts one instance of every widget per monitor, and has no per-monitor
+filter of its own. `monitors` is that filter: an instance whose screen is not
+listed hides itself, collapses to zero width, and stops sampling, so a bar that
+is crowded on a second screen can carry this widget on the first alone.
+
+```sh
+omarchy bar set io.github.edgarsilva.hw-monitor monitors DP-1
+```
+
+Names are Hyprland connector names — `hyprctl monitors -j | jq -r '.[].name'`.
+An instance that cannot resolve its screen yet shows rather than hides, so the
+widget never disappears because it was asked too early during startup.
 
 ### Sizing
 
@@ -247,6 +263,15 @@ on a machine without touching the shell at all:
 ```sh
 ./hw-probe | jq
 ```
+
+### If this ever stores anything
+
+It does not today — the plugin reads `/proc`, `/sys`, and its own settings out
+of `shell.json`, and writes nothing of its own. Should that change, create the
+file `0600` inside a `0700` directory, **created with those modes** rather than
+`chmod`ed after the fact — a file is readable for the moment between `open` and
+`chmod`, and a default `umask` leaves it `0644`, world-readable on a shared
+machine. Same rule for any directory: `mkdir -m 700`, not `mkdir` then `chmod`.
 
 ## Removal
 

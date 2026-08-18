@@ -37,7 +37,8 @@
       "warnTempC": 75,
       "criticalTempC": 90,
       "clickCommand": "omarchy-launch-or-focus-tui btop",
-      "percentPad": "zero"
+      "percentPad": "zero",
+      "monitors": []
     },
     "schema": [
       {
@@ -51,6 +52,13 @@
         ],
         "defaultValue": "full",
         "description": "compact is glyph + gauge; full adds the temperature; labels spells the readout out as words — RAM 19.4/63G · CPU 34% 46° — with no glyph or gauge, the way a Waybar hardware group reads. Right-clicking the widget cycles them."
+      },
+      {
+        "key": "monitors",
+        "type": "string",
+        "label": "Monitors",
+        "defaultValue": "",
+        "description": "Which screens to draw on, by connector name — 'DP-1', or 'DP-1,HDMI-A-1'. Empty means all of them. The bar mounts one widget per monitor and has no per-monitor filter of its own, so an instance hides itself on the screens it was not asked for, and stops sampling there too."
       },
       {
         "key": "refreshIntervalSec",

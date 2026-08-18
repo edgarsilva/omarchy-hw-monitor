@@ -18,6 +18,10 @@ Item {
 
   property var settings: ({})
 
+  // Set false on a screen this widget is not drawn on: the timers stop and the
+  // probe never runs, so a hidden instance costs nothing.
+  property bool active: true
+
   // Resolved from this file's own location rather than spelled out, so a fork
   // that renames the plugin id does not silently lose the helper.
   readonly property string pluginDir: {
@@ -264,7 +268,7 @@ Item {
 
   Timer {
     interval: root.intervalSec * 1000
-    running: true
+    running: root.active
     repeat: true
     onTriggered: root.sample()
   }
@@ -273,13 +277,17 @@ Item {
   // the widget shows a real number immediately rather than a dash.
   Timer {
     interval: 350
-    running: true
+    running: root.active
     repeat: false
     onTriggered: root.sample()
   }
 
-  Component.onCompleted: {
+  function start() {
+    if (!active || probeProcess.running) return
     sample()
     refreshProbe()
   }
+
+  onActiveChanged: if (active) start()
+  Component.onCompleted: start()
 }
