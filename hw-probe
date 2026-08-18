@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+
+# Discovers which sysfs files this machine exposes for CPU and GPU telemetry
+# and prints them as JSON.
+#
+# This runs once when the widget loads, not on every tick. Sensor paths are
+# stable for the life of a boot, so once they are known the widget samples by
+# reading those files directly from inside the shell process — no subprocess
+# per interval. Globbing and label matching is the one part that needs a
+# shell, which is all this script is for.
+#
+# Nothing here requires root, and nothing is written.
+
+set -uo pipefail
+
+# ------------------------------------------------------------------ helpers
+
+read_first() {
+  [[ -r $1 ]] || return 1
+  IFS= read -r line <"$1" 2>/dev/null || return 1
+  printf '%s' "$line"
+}
+
+# JSON string escaping. Sensor and PCI names come from the kernel and lspci,
+# so backslashes and quotes are unlikely but not impossible.
+json_str() {
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//	/ }
+  printf '"%s"' "$s"
+}
+
+# Emit `"key": <json>` only when the path exists, so the consumer can treat a
+# missing key as "this machine does not report that".
+field_path() {
+  local key=$1 path=$2
+  [[ -n $path && -r $path ]] || return 0
+  printf '%s: %s, ' "$(json_str "$key")" "$(json_str "$path")"
+}
+
+trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+
+# ---------------------------------------------------------------------- cpu
+
+cpu_model=$(awk -F: '/^model name/ {sub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo)
+# ARM boards have no "model name"; fall back to the SoC hardware line.
+[[ -z $cpu_model ]] && cpu_model=$(awk -F: '/^Hardware|^Model/ {sub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo)
+[[ -z $cpu_model ]] && cpu_model="CPU"
+# Marketing suffixes eat tooltip width and say nothing.
+cpu_model=$(trim "${cpu_model//(R)/}")
+cpu_model=${cpu_model//(TM)/}
+cpu_model=${cpu_model//(tm)/}
+cpu_model=${cpu_model// CPU/}
+# "16-Core Processor" duplicates the core count shown beside it.
+cpu_model=$(sed -E 's/ [0-9]+-Core Processor//; s/ Processor$//' <<<"$cpu_model")
+cpu_model=${cpu_model//  / }
+
+cpu_threads=$(grep -c '^processor' /proc/cpuinfo)
+# Physical cores = distinct (physical id, core id) pairs. SMT-less and
+# heterogeneous (P/E core) CPUs fall back to the thread count.
+cpu_cores=$(awk -F: '
+  /^physical id/ { sub(/^[ \t]+/, "", $2); pkg = $2 }
+  /^core id/     { sub(/^[ \t]+/, "", $2); seen[pkg "/" $2] = 1 }
+  END { print length(seen) }
+' /proc/cpuinfo)
+[[ -z $cpu_cores || $cpu_cores -eq 0 ]] && cpu_cores=$cpu_threads
+
+# Package temperature. Every vendor names this differently, so score the
+# candidates and keep the best: a die/package reading beats a per-core or
+# per-CCD one, and any dedicated CPU sensor beats the ACPI thermal zone.
+cpu_temp_path=""
+cpu_temp_label=""
+cpu_temp_score=0
+
+consider_cpu_temp() {
+  local score=$1 path=$2 label=$3
+  ((score > cpu_temp_score)) || return 0
+  [[ -r $path ]] || return 0
+  cpu_temp_score=$score
+  cpu_temp_path=$path
+  cpu_temp_label=$label
+}
+
+for hwmon in /sys/class/hwmon/hwmon*; do
+  name=$(read_first "$hwmon/name") || continue
+  for input in "$hwmon"/temp*_input; do
+    [[ -r $input ]] || continue
+    label=$(read_first "${input%_input}_label" || true)
+    case "$name" in
+      k10temp | zenpower)
+        case "$label" in
+          Tdie) consider_cpu_temp 100 "$input" "${label:-$name}" ;;
+          Tctl) consider_cpu_temp 95 "$input" "${label:-$name}" ;;
+          *) consider_cpu_temp 60 "$input" "${label:-$name}" ;;
+        esac
+        ;;
+      coretemp)
+        case "$label" in
+          "Package id"*) consider_cpu_temp 90 "$input" "$label" ;;
+          *) consider_cpu_temp 55 "$input" "${label:-$name}" ;;
+        esac
+        ;;
+      *thinkpad*)
+        [[ $label == CPU ]] && consider_cpu_temp 65 "$input" "$label"
+        ;;
+      cpu_thermal | soc_thermal | scpi_sensors | cpu-thermal)
+        consider_cpu_temp 70 "$input" "${label:-$name}"
+        ;;
+      acpitz)
+        consider_cpu_temp 20 "$input" "${label:-$name}"
+        ;;
+    esac
+  done
+done
+
+# ---------------------------------------------------------------------- gpu
+
+# lspci turns 1002:7550 into "Navi 48 [Radeon RX 9070 XT]", which is the only
+# human-readable name a DRM card exposes. Missing pciutils just means the
+# tooltip shows the driver name instead.
+have_lspci=0
+command -v lspci >/dev/null 2>&1 && have_lspci=1
+
+gpu_name_for() {
+  local dev=$1 driver=$2 slot line name
+  slot=$(sed -n 's/^PCI_SLOT_NAME=//p' "$dev/uevent" 2>/dev/null | head -1)
+  if ((have_lspci)) && [[ -n $slot ]]; then
+    line=$(lspci -s "$slot" 2>/dev/null | head -1)
+    # "0d:00.0 VGA compatible controller: AMD/ATI Navi 48 [Radeon RX 9070 XT]"
+    name=${line#*: }
+    name=${name%% (rev *}
+    # Keep the marketing name inside the brackets when there is one.
+    if [[ $name == *\[*\]* ]]; then
+      local bracketed=${name##*[}
+      bracketed=${bracketed%%]*}
+      [[ -n $bracketed ]] && name=$bracketed
+    fi
+    name=$(trim "$name")
+    [[ -n $name ]] && { printf '%s' "$name"; return; }
+  fi
+  printf '%s' "${driver:-GPU}"
+}
+
+# amdgpu exposes three temperatures (edge, junction, mem). Edge is the one
+# every tool reports as "the" GPU temperature.
+gpu_temp_for() {
+  local hw=$1 input label
+  for input in "$hw"/temp*_input; do
+    [[ -r $input ]] || continue
+    label=$(read_first "${input%_input}_label" || true)
+    [[ $label == edge ]] && { printf '%s' "$input"; return; }
+  done
+  [[ -r $hw/temp1_input ]] && printf '%s' "$hw/temp1_input"
+}
+
+gpu_entries=()
+
+for card in /sys/class/drm/card[0-9]*; do
+  # Connectors are siblings named card1-DP-1; only the card itself has a device.
+  [[ $card == *-* ]] && continue
+  dev=$card/device
+  [[ -d $dev ]] || continue
+
+  driver=$(sed -n 's/^DRIVER=//p' "$dev/uevent" 2>/dev/null | head -1)
+  hw=""
+  for candidate in "$dev"/hwmon/hwmon*; do
+    [[ -d $candidate ]] && { hw=$candidate; break; }
+  done
+
+  entry="{"
+  entry+="$(printf '%s: %s, ' "$(json_str kind)" "$(json_str "${driver:-drm}")")"
+  entry+="$(printf '%s: %s, ' "$(json_str name)" "$(json_str "$(gpu_name_for "$dev" "$driver")")")"
+  entry+="$(printf '%s: %s, ' "$(json_str card)" "$(json_str "${card##*/}")")"
+  entry+="$(field_path busyPath "$dev/gpu_busy_percent")"
+  entry+="$(field_path vramUsedPath "$dev/mem_info_vram_used")"
+  entry+="$(field_path vramTotalPath "$dev/mem_info_vram_total")"
+  if [[ -n $hw ]]; then
+    entry+="$(field_path tempPath "$(gpu_temp_for "$hw")")"
+    # power1_average is the running average board draw; power1_input is the
+    # instantaneous value some cards expose instead.
+    if [[ -r $hw/power1_average ]]; then
+      entry+="$(field_path powerPath "$hw/power1_average")"
+    else
+      entry+="$(field_path powerPath "$hw/power1_input")"
+    fi
+    entry+="$(field_path fanPath "$hw/fan1_input")"
+    entry+="$(field_path clockPath "$hw/freq1_input")"
+  fi
+  entry=${entry%, }
+  entry+="}"
+
+  # A card that reports neither load nor temperature is not worth a slot.
+  [[ $entry == *busyPath* || $entry == *tempPath* ]] || continue
+
+  # Cards that report load sort first: on a laptop with an iGPU and a dGPU the
+  # one with a busy counter is the one the user means by "GPU".
+  if [[ $entry == *busyPath* ]]; then
+    gpu_entries=("$entry" "${gpu_entries[@]+"${gpu_entries[@]}"}")
+  else
+    gpu_entries+=("$entry")
+  fi
+done
+
+# NVIDIA reports nothing useful through sysfs, so it gets sampled by polling
+# nvidia-smi instead. Declared last: a sysfs-capable card is always cheaper.
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nv_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+  if [[ -n $nv_name ]]; then
+    nv="{$(printf '%s: %s, ' "$(json_str kind)" "$(json_str nvidia)")"
+    nv+="$(printf '%s: %s, ' "$(json_str name)" "$(json_str "$(trim "$nv_name")")")"
+    nv+="$(printf '%s: %s' "$(json_str index)" 0)}"
+    if ((${#gpu_entries[@]} == 0)); then
+      gpu_entries=("$nv")
+    else
+      gpu_entries+=("$nv")
+    fi
+  fi
+fi
+
+# -------------------------------------------------------------------- output
+
+printf '{'
+printf '"cpu": {'
+printf '"model": %s, ' "$(json_str "$cpu_model")"
+printf '"cores": %d, ' "$cpu_cores"
+printf '"threads": %d' "$cpu_threads"
+if [[ -n $cpu_temp_path ]]; then
+  printf ', "tempPath": %s' "$(json_str "$cpu_temp_path")"
+  printf ', "tempLabel": %s' "$(json_str "$cpu_temp_label")"
+fi
+printf '}, "gpus": ['
+for i in "${!gpu_entries[@]}"; do
+  ((i > 0)) && printf ', '
+  printf '%s' "${gpu_entries[i]}"
+done
+printf ']}\n'
