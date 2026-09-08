@@ -172,34 +172,39 @@ for card in /sys/class/drm/card[0-9]*; do
     [[ -d $candidate ]] && { hw=$candidate; break; }
   done
 
+  # Sensor paths first. Resolving the card's name shells out to lspci, which is
+  # wasted work on a card that is about to be dropped, so the discard test runs
+  # before the name lookup rather than after it.
+  fields="$(field_path busyPath "$dev/gpu_busy_percent")"
+  fields+="$(field_path vramUsedPath "$dev/mem_info_vram_used")"
+  fields+="$(field_path vramTotalPath "$dev/mem_info_vram_total")"
+  if [[ -n $hw ]]; then
+    fields+="$(field_path tempPath "$(gpu_temp_for "$hw")")"
+    # power1_average is the running average board draw; power1_input is the
+    # instantaneous value some cards expose instead.
+    if [[ -r $hw/power1_average ]]; then
+      fields+="$(field_path powerPath "$hw/power1_average")"
+    else
+      fields+="$(field_path powerPath "$hw/power1_input")"
+    fi
+    fields+="$(field_path fanPath "$hw/fan1_input")"
+    fields+="$(field_path clockPath "$hw/freq1_input")"
+  fi
+
+  # A card that reports neither load nor temperature is not worth a slot.
+  [[ $fields == *busyPath* || $fields == *tempPath* ]] || continue
+
   entry="{"
   entry+="$(printf '%s: %s, ' "$(json_str kind)" "$(json_str "${driver:-drm}")")"
   entry+="$(printf '%s: %s, ' "$(json_str name)" "$(json_str "$(gpu_name_for "$dev" "$driver")")")"
   entry+="$(printf '%s: %s, ' "$(json_str card)" "$(json_str "${card##*/}")")"
-  entry+="$(field_path busyPath "$dev/gpu_busy_percent")"
-  entry+="$(field_path vramUsedPath "$dev/mem_info_vram_used")"
-  entry+="$(field_path vramTotalPath "$dev/mem_info_vram_total")"
-  if [[ -n $hw ]]; then
-    entry+="$(field_path tempPath "$(gpu_temp_for "$hw")")"
-    # power1_average is the running average board draw; power1_input is the
-    # instantaneous value some cards expose instead.
-    if [[ -r $hw/power1_average ]]; then
-      entry+="$(field_path powerPath "$hw/power1_average")"
-    else
-      entry+="$(field_path powerPath "$hw/power1_input")"
-    fi
-    entry+="$(field_path fanPath "$hw/fan1_input")"
-    entry+="$(field_path clockPath "$hw/freq1_input")"
-  fi
+  entry+="$fields"
   entry=${entry%, }
   entry+="}"
 
-  # A card that reports neither load nor temperature is not worth a slot.
-  [[ $entry == *busyPath* || $entry == *tempPath* ]] || continue
-
   # Cards that report load sort first: on a laptop with an iGPU and a dGPU the
   # one with a busy counter is the one the user means by "GPU".
-  if [[ $entry == *busyPath* ]]; then
+  if [[ $fields == *busyPath* ]]; then
     gpu_entries=("$entry" "${gpu_entries[@]+"${gpu_entries[@]}"}")
   else
     gpu_entries+=("$entry")
