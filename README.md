@@ -55,7 +55,7 @@ label welded to its figure, ~230px.
 
 | | Source | Shown |
 |---|---|---|
-| Memory | `/proc/meminfo` | used against total, measured with `MemAvailable` so reclaimable page cache is not counted as used |
+| Memory | `/proc/meminfo`, `/proc/vmstat` | used against total, measured with `MemAvailable` so reclaimable page cache is not counted as used; the amdgpu freed-page pool (`nr_gpu_reclaim`, kernel 7.2+) is added back as available, since the kernel leaves it out |
 | CPU load | `/proc/stat` | jiffie deltas between samples, `iowait` counted as idle — the same arithmetic `top` and `btop` use |
 | CPU clock | `/proc/cpuinfo` | mean across every thread |
 | CPU temperature | `hwmon` | die/package sensor, picked by scoring (`k10temp` `Tdie`/`Tctl`, `coretemp` `Package id 0`, `zenpower`, ThinkPad, ARM SoC, then `acpitz`) |
