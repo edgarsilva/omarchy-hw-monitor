@@ -109,7 +109,8 @@ Item {
     }
 
     memFile.reload()
-    var parsed = Model.parseMemory(memFile.text())
+    vmstatFile.reload()
+    var parsed = Model.parseMemory(memFile.text(), vmstatFile.text())
     if (parsed) memory = parsed
 
     cpuinfoFile.reload()
@@ -186,6 +187,7 @@ Item {
 
   FileView { id: statFile; path: "/proc/stat"; blockAllReads: true; printErrors: false }
   FileView { id: memFile; path: "/proc/meminfo"; blockAllReads: true; printErrors: false }
+  FileView { id: vmstatFile; path: "/proc/vmstat"; blockAllReads: true; printErrors: false }
   FileView { id: cpuinfoFile; path: "/proc/cpuinfo"; blockAllReads: true; printErrors: false }
   FileView { id: loadFile; path: "/proc/loadavg"; blockAllReads: true; printErrors: false }
 

@@ -107,7 +107,10 @@ function parseLoadAverage(raw) {
 // MemAvailable is the kernel's own estimate of what a new allocation can get
 // without swapping, which is what "used" should be measured against — total
 // minus free counts reclaimable page cache as used and always reads ~90%.
-function parseMemory(raw) {
+// Kernel 7.2+ amdgpu keeps a freed-page pool (nr_gpu_reclaim, 4 KiB pages in
+// /proc/vmstat) that MemAvailable ignores; it is reclaimable, so count it.
+// Older kernels lack the key and contribute 0.
+function parseMemory(raw, vmstat) {
   var text = String(raw || "")
   function field(key) {
     var match = text.match(new RegExp("^" + key + ":\\s+(\\d+)", "m"))
@@ -119,12 +122,16 @@ function parseMemory(raw) {
   if (total <= 0) return null
   if (available <= 0) available = field("MemFree") + field("Buffers") + field("Cached")
 
+  var gpuMatch = String(vmstat || "").match(/^nr_gpu_reclaim\s+(\d+)/m)
+  var gpuReclaimKib = gpuMatch ? toNumber(gpuMatch[1]) * 4 : 0
+  available = Math.min(total, available + gpuReclaimKib)
+
   var swapTotal = field("SwapTotal")
   return {
     totalKib: total,
     availableKib: available,
     usedKib: Math.max(0, total - available),
-    cachedKib: field("Cached") + field("SReclaimable"),
+    cachedKib: field("Cached") + field("SReclaimable") + gpuReclaimKib,
     swapTotalKib: swapTotal,
     swapUsedKib: Math.max(0, swapTotal - field("SwapFree")),
     percent: clamp(100 * (total - available) / total, 0, 100)
